@@ -1,0 +1,334 @@
+﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+
+
+<head>
+<!--[if IE]><script src="scripts/excanvas.js"></script><![endif]-->
+<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.6.4/jquery.js" type="text/javascript"></script>
+
+<script type="text/javascript" language="javascript">
+    /// <reference path="http://ajax.aspnetcdn.com/ajax/jQuery/jquery-1.6.4-vsdoc.js"/>
+    /// <reference path="http://ajax.cdnjs.com/ajax/libs/json2/20110223/json2.js"/>
+
+    $(function () {
+        var sun = new Image();
+        var moon = new Image();
+        var earth = new Image();
+        var G = 0.000000012;
+        var BrakingConstant = 0.000001;
+        var CanvasEl = document.getElementById('canvas');
+        var ctx = CanvasEl.getContext('2d');
+        var DrawInterval;
+        var PhysicsInterval;
+        var UIUpdateInterval;
+        var minDist = 0.0025;
+        var ezPI = 3.14159265;
+        var glContext;
+
+        function glTesting() {
+
+
+            var glContext = initWebGL(CanvasEl);      // Initialize the GL context
+
+            // Only continue if WebGL is available and working
+
+            if (gl) {
+                gl.clearColor(0.0, 0.0, 0.0, 1.0);                      // Set clear color to black, fully opaque
+                gl.enable(gl.DEPTH_TEST);                               // Enable depth testing
+                gl.depthFunc(gl.LEQUAL);                                // Near things obscure far things
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);      // Clear the color as well as the depth buffer.
+            }
+        }
+        function initWebGL(canvas) {
+            var gl = null;
+
+            try {
+                gl = canvas.getContext("experimental-webgl");
+            }
+            catch (e) {
+            }
+
+            // If we don't have a GL context, give up now
+
+            if (!gl) {
+                alert("Unable to initialize WebGL. Your browser may not support it.");
+            }
+            return gl;
+        }
+
+
+
+        var DrawingUtils = {
+            drawArrow: function (ctx, x1, y1, x2, y2, lineStyle, headStyle, headAngle, headLength) {
+                var yDist = y2 - y1;
+                var xDist = x2 - x1;
+                var lineDist = Math.sqrt((yDist * yDist) + (xDist * xDist));
+                var newLineDist = lineDist - headLength;
+                var LineAngle = Math.atan2(yDist, xDist);
+                var ArrowEdgeAngles = [LineAngle + headAngle, LineAngle - headAngle];
+                var ArrowEdgeLength = headLength / Math.cos(ArrowEdgeAngles[0]);
+                var ArrowHeadCoords = [
+                    { x: x2, y: y2 },
+                    { x: x2 - (Math.cos(ArrowEdgeAngles[0]) * ArrowEdgeLength), y: y2 - (Math.sin(ArrowEdgeAngles[0]) * ArrowEdgeLength) },
+                    { x: x2 - (Math.cos(ArrowEdgeAngles[1]) * ArrowEdgeLength), y: y2 - (Math.sin(ArrowEdgeAngles[1]) * ArrowEdgeLength) }
+                ];
+                x2 = x1 + (Math.cos(LineAngle) * newLineDist);
+                y2 = y1 + (Math.sin(LineAngle) * newLineDist);
+                ctx.save();
+                ctx.beginPath();
+                ctx.strokeStyle = lineStyle.strokeStyle || "red";
+                ctx.lineWidth = lineStyle.lineWidth || 1;
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y2);
+                ctx.stroke();
+                ctx.restore();
+                var headDrawFunction = typeof (headStyle) != 'function' ? this.drawHead : headStyle;
+                headDrawFunction(ctx, ArrowHeadCoords, headStyle);
+                ctx.restore();
+            },
+            drawHead: function (ctx, arrowPointCoords, headStyle) {
+                var tmpLength = arrowPointCoords.length - 1;
+                var nextIndex;
+                ctx.restore();
+                ctx.strokeStyle = headStyle.strokeStyle || "red";
+                ctx.lineWidth = headStyle.lineWidth || 1;
+                ctx.fillStyle = headStyle.fillStyle || "red";
+                ctx.lineJoin = 'miter';
+                ctx.beginPath();
+                ctx.moveTo(arrowPointCoords[0].x, arrowPointCoords[0].y);
+                for (var i = 1; i < arrowPointCoords.length + 1; i++) {
+                    nextIndex = i % arrowPointCoords.length;
+                    ctx.lineTo(arrowPointCoords[nextIndex].x, arrowPointCoords[nextIndex].y);
+
+                }
+                ctx.stroke();
+                ctx.fill();
+            }
+        };
+
+
+
+        var Phys = {
+            Brake: function (anObject, aFrictionCoeff) {
+                if (Math.abs(anObject.xVel) < aFrictionCoeff) anObject.xVel = 0;
+                if (Math.abs(anObject.yVel) < aFrictionCoeff) anObject.yVel = 0;
+                Phys.ProcessForce(anObject, { x: anObject.xVel * -1, y: anObject.yVel * -1 }, aFrictionCoeff);
+            },
+            Attract: function (objectA, objectB) {
+                var xDist = objectA.x - objectB.x;
+                var xDistSq = Math.pow(xDist, 2);
+                var yDist = (objectA.y - objectB.y);
+                var yDistSq = Math.pow(yDist, 2);
+                var cDist = Math.sqrt(xDistSq + yDistSq);
+                var theta = Math.atan2(yDist, xDist)
+                var massCoeff = objectA.mass * objectB.mass;
+                var gForceCoeff = G * massCoeff;
+                var gForce = gForceCoeff / ((cDist > minDist) ? cDist : minDist);
+                var xForce = gForce * Math.cos(theta);
+                var yForce = gForce * Math.sin(theta);
+                var forceVectorA = { x: xForce * objectA.gravCoeff, y: yForce * objectA.gravCoeff };
+                var forceVectorB = { x: xForce * objectB.gravCoeff, y: yForce * objectB.gravCoeff };
+                Phys.ProcessForce(objectA, forceVectorB, -1);
+                Phys.ProcessForce(objectB, forceVectorA, 1);
+            },
+            ProcessForce: function (anObject, aVector, aCoeff) {
+                anObject.xVel += (aVector.x * aCoeff) / anObject.mass;
+                anObject.yVel += (aVector.y * aCoeff) / anObject.mass;
+            },
+            ProcessMovement: function (anObject) {
+                var time = new Date();
+                var now = (time.getSeconds() * 1000) + time.getMilliseconds();
+                var diff = now - anObject.lastUpdated;
+                if (diff < 0) diff = 1;
+                anObject.x += anObject.xVel * diff;
+                anObject.y += anObject.yVel * diff;
+                anObject.lastUpdated = now;
+            },
+            BinaryPhysicalProcess: function (aProcess, anObjectIndex) {
+                if (anObjectIndex + 1 > PhysicalObjects.length) return;
+                for (var i = anObjectIndex + 1; i < PhysicalObjects.length; i++) {
+                    aProcess(PhysicalObjects[anObjectIndex], PhysicalObjects[i]);
+                }
+                Phys.BinaryPhysicalProcess(aProcess, anObjectIndex + 1);
+            },
+            ProcessPhysics: function () {
+                var begin = new Date().getMilliseconds();
+                for (var i = 0; i < TwoBodyProcesses.length; i++) {
+                    Phys.BinaryPhysicalProcess(TwoBodyProcesses[i], 0);
+                }
+                for (var i = 0; i < PhysicalObjects.length; i++) {
+                    Phys.Brake(PhysicalObjects[i], BrakingConstant);
+                    Phys.ProcessMovement(PhysicalObjects[i]);
+                }
+                time = new Date().getMilliseconds() - begin;
+            }
+        };
+        $('#G').val(G);
+        $('#Brake').val(BrakingConstant);
+        $('#G').live('change', function (e) { G = $(this).val() * 1.0; });
+        $('#Brake').live('change', function (e) { BrakingConstant = $(this).val() * 1.0; });
+        $('#MinDist').val(minDist);
+        $('#MinDist').live('change', function (e) { minDist = $(this).val() * 1.0; })
+
+        var moonType = {
+            x: 0.00,
+            y: 0.00,
+            mass: 100,
+            gravCoeff: 1,
+            lastUpdated: 0,
+            xVel: 0,
+            yVel: 0,
+            DrawMoon: function (aCTX) {
+                aCTX.drawImage(moon, this.x, this.y);
+                aCTX.beginPath();
+                aCTX.arc(this.x + 4, this.y + 4, 5, 0, 360);
+                aCTX.fillStyle = "rgba(0, 0, 200, 0.5)"; // line color
+                aCTX.fill()
+
+            }
+        };
+
+        function init() {
+            sun.src = 'images/sun.png';
+            moon.src = 'images/moon.png';
+            earth.src = 'images/earth.png';
+            DrawInterval = setInterval(drawScene, 10);
+        };
+
+        function CanvasClickHandler(e) {
+            var x;
+            var y;
+            if (e.pageX || e.pageY) {
+                x = e.pageX;
+                y = e.pageY;
+            }
+            else {
+                x = e.clientX + document.body.scrollLeft + document.documentElement.scrollLeft;
+                y = e.clientY + document.body.scrollTop + document.documentElement.scrollTop;
+            }
+            x -= CanvasEl.offsetLeft;
+            y -= CanvasEl.offsetTop;
+            var tmpmass = document.getElementById('Mass').value;
+            var tmpspecgrav = document.getElementById('SpecGrav').value;
+            var tmpMoon = GenerateMoon(x, y, tmpmass * 1, tmpspecgrav * 1);
+            var index = PhysicalObjects.push(tmpMoon);
+        }
+        CanvasEl.onclick = CanvasClickHandler;
+
+        var PhysicalObjects = [
+        //GenerateMoon(400, 400, 10000000,1),
+        //GenerateMoon(600, 550, 1000,1)
+            ];
+        var TwoBodyProcesses = [Phys.Attract];
+        var Attractors = [];
+
+        function GenerateMoon(anX, anY, aMass, aGravCoeff) {
+            var tmpMoon = $.extend(true, {}, moonType);
+            tmpMoon.x = anX;
+            tmpMoon.y = anY;
+            tmpMoon.mass = aMass;
+            var time = new Date();
+            var now = (time.getSeconds() * 1000) + time.getMilliseconds();
+            tmpMoon.lastUpdated = now;
+            tmpMoon.gravCoeff = aGravCoeff || 1;
+            return tmpMoon;
+        }
+        var time;
+        function DrawObjects(ctx) {
+            for (var i = 0; i < PhysicalObjects.length; i++) {
+                PhysicalObjects[i].DrawMoon(ctx);
+                if (PhysicalObjects.length > 2 && i + 1 < PhysicalObjects.length)
+                    DrawingUtils.drawArrow(ctx, PhysicalObjects[i].x, PhysicalObjects[i].y, PhysicalObjects[i + 1].x, PhysicalObjects[i + 1].y, { lineWidth: 2 }, {}, Math.PI / 12, 15);
+            }
+
+        }
+
+        PhysicsInterval = setInterval(Phys.ProcessPhysics, 1);
+
+        function updateTracker() {
+            var tmpList = $('#ItemList');
+            $('#PhysInterval').val(time);
+            tmpList.children().remove();
+            var tmpLi;
+            for (var i = 0; i < PhysicalObjects.length; i++) {
+                tmpLi = $('<li />');
+                $('<span />').text('********').appendTo(tmpLi);
+                $('<br/>').appendTo(tmpLi);
+                $('<span />').text('Mass :' + PhysicalObjects[i].mass).appendTo(tmpLi);
+                $('<br/>').appendTo(tmpLi);
+                $('<span />').text('GravCoeff :' + PhysicalObjects[i].gravCoeff).appendTo(tmpLi);
+                $('<br/>').appendTo(tmpLi);
+                $('<span />').text('x :' + PhysicalObjects[i].x).appendTo(tmpLi);
+                $('<br/>').appendTo(tmpLi);
+                $('<span />').text('y :' + PhysicalObjects[i].y).appendTo(tmpLi);
+                $('<br/>').appendTo(tmpLi);
+                $('<span />').text('xVel :' + PhysicalObjects[i].xVel).appendTo(tmpLi);
+                $('<br/>').appendTo(tmpLi);
+                $('<span />').text('yVel :' + PhysicalObjects[i].yVel).appendTo(tmpLi);
+                tmpLi.appendTo(tmpList);
+            }
+        }
+
+
+        function drawScene() {
+
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.clearRect(0, 0, 900, 900); // clear canvas
+
+            ctx.drawImage(sun, 0, 0, 900, 900);
+            DrawObjects(ctx);
+
+        }
+
+        init();
+        setInterval(updateTracker, 200);
+    });
+</script>
+
+
+    <title></title>
+</head>
+<body>
+    <canvas style="float:left"  id="canvas" height="900" width="900" >
+    </canvas>
+    <div id="ItemConsole" style= "float:left">
+        <ul id="ItemList" style="list-style-type:none">
+        </ul>
+    </div>
+    <div id="console" style= "float:left">
+        <ul style="list-style-type:none">
+            <li>
+                <label>PhysicsInterval
+                    <input disabled id="PhysInterval" />
+                </label>
+            </li>
+            <li>
+                <label>SpecGrav
+                    <input id="SpecGrav" value="1"/>
+                </label>
+            </li>
+            <li>
+                <label>SpecMass
+                    <input id="Mass" value="10000" />
+                </label>
+            </li>
+            <li>
+                <label>G
+                    <input id="G" />
+                </label>
+            </li>
+            <li>
+                <label>Minimum Distance
+                    <input id="MinDist" />
+                </label>
+            </li>
+            <li>
+                <label>Brake
+                    <input id="Brake" />
+                </label>
+            </li>
+        </ul>
+    </div>
+</body>
+</html>
